@@ -1,0 +1,14 @@
+node_modules
+dist
+*.log
+
+# Secrets — never commit. Copy .env.example to .env instead.
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Local exports and dumps contain customer PII.
+*.xlsx
+*.dump
+*.sql.gz

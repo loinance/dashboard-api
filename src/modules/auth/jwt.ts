@@ -1,0 +1,68 @@
+import { SignJWT, jwtVerify } from 'jose'
+import type { CookieOptions, Response } from 'express'
+import { env } from '../../env.js'
+
+const secret = new TextEncoder().encode(env.JWT_SECRET)
+const ALGORITHM = 'HS256'
+const ISSUER = 'loinance-api'
+
+export interface SessionClaims {
+  sub: string
+  role: 'admin' | 'agent'
+  name: string
+  email: string
+}
+
+export async function signSession(claims: SessionClaims): Promise<string> {
+  return new SignJWT({ role: claims.role, name: claims.name, email: claims.email })
+    .setProtectedHeader({ alg: ALGORITHM })
+    .setSubject(claims.sub)
+    .setIssuer(ISSUER)
+    .setIssuedAt()
+    .setExpirationTime(`${env.SESSION_HOURS}h`)
+    .sign(secret)
+}
+
+export async function verifySession(token: string): Promise<SessionClaims | null> {
+  try {
+    const { payload } = await jwtVerify(token, secret, {
+      issuer: ISSUER,
+      algorithms: [ALGORITHM],
+    })
+    if (!payload.sub) return null
+    return {
+      sub: payload.sub,
+      role: payload.role === 'admin' ? 'admin' : 'agent',
+      name: String(payload.name ?? ''),
+      email: String(payload.email ?? ''),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * §6 — HttpOnly so an XSS bug cannot read it, Secure in production, SameSite
+ * Lax so the browser still sends it on the top-level export download.
+ * The token is never returned in a response body and never touches localStorage.
+ */
+function cookieOptions(): CookieOptions {
+  return {
+    httpOnly: true,
+    secure: env.isProd,
+    sameSite: 'lax',
+    path: '/',
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+  }
+}
+
+export function setSessionCookie(res: Response, token: string): void {
+  res.cookie(env.cookieName, token, {
+    ...cookieOptions(),
+    maxAge: env.SESSION_HOURS * 60 * 60 * 1000,
+  })
+}
+
+export function clearSessionCookie(res: Response): void {
+  res.clearCookie(env.cookieName, cookieOptions())
+}
