@@ -43,14 +43,16 @@ export async function verifySession(token: string): Promise<SessionClaims | null
 
 /**
  * §6 — HttpOnly so an XSS bug cannot read it, Secure in production, SameSite
- * Lax so the browser still sends it on the top-level export download.
+ * from `COOKIE_SAMESITE` (`lax` locally so the top-level export download still
+ * carries it; `none` once the API and the dashboard are on separate domains,
+ * where `lax` would drop the cookie from every admin XHR).
  * The token is never returned in a response body and never touches localStorage.
  */
 function cookieOptions(): CookieOptions {
   return {
     httpOnly: true,
     secure: env.isProd,
-    sameSite: 'lax',
+    sameSite: env.cookieSameSite,
     path: '/',
     ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
   }

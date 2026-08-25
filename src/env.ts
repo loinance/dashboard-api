@@ -1,5 +1,10 @@
-import 'dotenv/config'
+import { config as loadDotenv } from 'dotenv'
 import { z } from 'zod'
+
+/* A deployed process gets its configuration from the platform, not a file —
+   there is no .env there and dotenv is a no-op. `quiet` keeps it from printing
+   its banner into the deploy log on every boot. */
+loadDotenv({ quiet: true })
 
 /** `true`/`1`/`yes` in any case; everything else false. */
 const booleanish = z
@@ -10,12 +15,23 @@ const booleanish = z
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
+  /* Railway's private network is IPv6-only, so the socket must be bound to
+     `::` (which also accepts IPv4 on a dual-stack host) and not 0.0.0.0. */
+  HOST: z.string().min(1).default('::'),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   DATABASE_SSL: z.enum(['require', 'no-verify', 'disable']).optional(),
+  /* Apply pending migrations at boot. Railway has no release phase, so this
+     is the only hook that runs before the first request on a fresh deploy. */
+  RUN_MIGRATIONS_ON_BOOT: booleanish,
 
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   COOKIE_DOMAIN: z.string().optional(),
+  /* The API and the dashboard are on different registrable domains once this
+     is deployed (railway.app vs the site's domain), which makes every admin
+     XHR cross-site — `lax` would drop the session cookie. Overridable so a
+     same-domain setup can keep the stricter value. */
+  COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).optional(),
   CORS_ORIGIN: z.string().min(1, 'CORS_ORIGIN is required'),
 
   /* §5.1 — the exact number of proxy hops. Never `true`. */
@@ -39,6 +55,39 @@ const EnvSchema = z.object({
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
 })
+
+/**
+ * Postgres TLS on a managed host is not one setting.
+ *
+ *  - Railway's in-cluster hostname (`*.railway.internal`) does not terminate
+ *    TLS at all, so `require` fails the connection outright.
+ *  - Its public proxy (`*.proxy.rlwy.net`, `*.railway.app`) presents a
+ *    self-signed certificate, so `require` with `rejectUnauthorized: true`
+ *    fails verification.
+ *
+ * Both are the common way to reach a Railway database, and both crash under
+ * the old `isProd ? 'require' : 'disable'` default. `DATABASE_SSL` still wins
+ * whenever it is set explicitly.
+ */
+function defaultSslMode(databaseUrl: string, isProd: boolean): 'require' | 'no-verify' | 'disable' {
+  let host = ''
+  let urlSslMode: string | null = null
+  try {
+    const url = new URL(databaseUrl)
+    host = url.hostname.toLowerCase()
+    urlSslMode = url.searchParams.get('sslmode')
+  } catch {
+    // Not a parseable URL — fall through to the NODE_ENV-based default and let
+    // the driver report the real problem.
+  }
+
+  if (urlSslMode === 'disable') return 'disable'
+  if (host.endsWith('.railway.internal') || host.endsWith('.internal')) return 'disable'
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return 'disable'
+  if (host.endsWith('.rlwy.net') || host.endsWith('.railway.app')) return 'no-verify'
+
+  return isProd ? 'require' : 'disable'
+}
 
 function parseEnv() {
   const parsed = EnvSchema.safeParse(process.env)
@@ -69,7 +118,14 @@ function parseEnv() {
     throw new Error('CORS_ORIGIN must be https:// in production')
   }
 
-  const sslMode = env.DATABASE_SSL ?? (isProd ? 'require' : 'disable')
+  const sslMode = env.DATABASE_SSL ?? defaultSslMode(env.DATABASE_URL, isProd)
+
+  const cookieSameSite = env.COOKIE_SAMESITE ?? (isProd ? 'none' : 'lax')
+  if (cookieSameSite === 'none' && !isProd) {
+    // Chrome drops `SameSite=None` without `Secure`, and `Secure` is only set
+    // in production — the cookie would silently never be stored.
+    throw new Error('COOKIE_SAMESITE=none requires NODE_ENV=production (the cookie must be Secure)')
+  }
 
   return {
     ...env,
@@ -77,10 +133,26 @@ function parseEnv() {
     isTest: env.NODE_ENV === 'test',
     corsOrigins,
     sslMode,
+    cookieSameSite,
     /** Name of the session cookie. */
     cookieName: 'loinance_session',
   }
 }
 
-export const env = parseEnv()
+/**
+ * A bad variable is a configuration mistake, not a bug — print the list and
+ * stop, rather than burying it under a module-load stack trace in the deploy log.
+ */
+function loadEnv(): ReturnType<typeof parseEnv> {
+  try {
+    return parseEnv()
+  } catch (err) {
+    console.error(`
+[dashboard-api] ${err instanceof Error ? err.message : String(err)}
+`)
+    process.exit(1)
+  }
+}
+
+export const env = loadEnv()
 export type Env = typeof env

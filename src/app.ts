@@ -24,7 +24,10 @@ export function createApp(): Express {
   app.use(
     pinoHttp({
       logger,
-      autoLogging: { ignore: (req: { url?: string }) => req.url === '/api/health' },
+      autoLogging: {
+        ignore: (req: { url?: string }) =>
+          req.url === '/api/health' || req.url === '/healthz',
+      },
     }),
   )
 
@@ -32,7 +35,10 @@ export function createApp(): Express {
     helmet({
       // No browser-rendered HTML is served from this origin.
       contentSecurityPolicy: false,
-      crossOriginResourcePolicy: { policy: 'same-site' },
+      /* The dashboard is on a different site once this is deployed (the API
+         gets a *.up.railway.app host), so `same-site` would block the export
+         download. CORS still decides who may actually read a response. */
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
       hsts: env.isProd ? { maxAge: 15_552_000, includeSubDomains: true } : false,
     }),
   )
@@ -51,6 +57,14 @@ export function createApp(): Express {
   app.use(express.json({ limit: '32kb' }))
   app.use(cookieParser())
   app.use(loadSession)
+
+  /* Liveness. Deliberately touches nothing: a platform health check pointed at
+     a probe that fails when the database blips will kill a process that is
+     perfectly capable of serving, and turn one outage into a restart loop.
+     `/api/health` below is the readiness probe that does check the database. */
+  app.get('/healthz', (_req, res) => {
+    res.status(200).json({ ok: true })
+  })
 
   app.get('/api/health', async (_req, res) => {
     const up = await checkDbHealth()
