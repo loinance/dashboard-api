@@ -80,7 +80,31 @@ npm run seed:user:prod -- --email you@example.com --name "Your Name" --role admi
 
 ## 5. Front end
 
-Point the site's `VITE_API_BASE` (or the equivalent proxy target) at the
+Point the site's `VITE_API_BASE_URL` (or the equivalent proxy target) at the
 service's public domain, and add that same origin to `CORS_ORIGIN` here. The
 frontend sends `credentials: 'include'`, so the origin must match exactly —
-no trailing slash, no wildcard.
+no trailing slash, no wildcard, and list the apex *and* the `www` host if the
+site answers on both. An origin that is not listed gets no
+`Access-Control-Allow-Origin` header at all and every dashboard call fails.
+
+## 6. How the session travels
+
+Two carriers, same signed JWT, in this order:
+
+1. **`Authorization: Bearer`** — `POST /api/auth/login` returns `token` in its
+   body, the dashboard keeps it and sends it on every later call.
+2. **The `loinance_session` cookie** — still set, still `HttpOnly`.
+
+The cookie alone is not enough while the API is on `*.up.railway.app` and the
+dashboard is on the site's own domain: that makes it a third-party cookie, which
+Safari and Brave refuse outright and Chrome refuses in incognito. Putting the API
+on `api.<site domain>` and setting `COOKIE_DOMAIN=.<site domain>` with
+`COOKIE_SAMESITE=lax` makes it first-party again and the Bearer fallback stops
+mattering.
+
+### Signed in, then every admin call returns 401
+
+Almost always `NODE_ENV`. Unset, it is `development`, and the cookie is issued
+`SameSite=Lax` without `Secure` — the browser stores it at login and then sends
+it on nothing. Confirm with `curl -sI <api>/healthz | grep -i strict-transport`:
+a production process sends HSTS, a development one sends nothing.

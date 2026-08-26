@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
+import { env } from '../../env.js'
 import { ApiError, ErrorCode } from '../../http/errors.js'
 import { parseOrThrow } from '../../http/validate.js'
 import { requireAuth } from '../../middleware/auth.js'
@@ -37,7 +38,15 @@ authRoutes.post('/auth/login', async (req, res) => {
   setSessionCookie(res, token)
   await markLoggedIn(user.id)
 
-  res.status(200).json({ user: toPublicUser(user) })
+  /* The cookie is still set and still preferred. `token` is returned as well so
+     the dashboard has something to send as `Authorization: Bearer` on the
+     browsers that refuse a third-party cookie — see `readToken` in
+     `middleware/auth.ts`. It is the same JWT, with the same 8-hour expiry. */
+  res.status(200).json({
+    user: toPublicUser(user),
+    token,
+    expiresIn: env.SESSION_HOURS * 60 * 60,
+  })
 })
 
 authRoutes.post('/auth/logout', (_req, res) => {

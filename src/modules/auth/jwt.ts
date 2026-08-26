@@ -46,7 +46,12 @@ export async function verifySession(token: string): Promise<SessionClaims | null
  * from `COOKIE_SAMESITE` (`lax` locally so the top-level export download still
  * carries it; `none` once the API and the dashboard are on separate domains,
  * where `lax` would drop the cookie from every admin XHR).
- * The token is never returned in a response body and never touches localStorage.
+ *
+ * The cookie is the preferred carrier and an XSS bug still cannot read it. It is
+ * no longer the only one: `/auth/login` also returns the token in its body so the
+ * dashboard can fall back to `Authorization: Bearer` on browsers that block
+ * third-party cookies outright. That copy does live in the tab's storage, which
+ * is the trade this deployment accepts to stay reachable from a different domain.
  */
 function cookieOptions(): CookieOptions {
   return {
